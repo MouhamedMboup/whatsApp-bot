@@ -1,0 +1,172 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint:
+    name: Lint and Type Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install flake8 mypy
+          pip install -r requirements.txt
+      
+      - name: Run flake8
+        run: |
+          flake8 core/ --max-line-length=120 --exclude=migrations
+      
+      - name: Run mypy (if type stubs available)
+        run: |
+          # mypy core/ --ignore-missing-imports || true
+          echo "Type checking skipped (add type stubs to enable)"
+
+  migrations:
+    name: Check Migrations
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: whatsapp_bot_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Check for unapplied migrations
+        env:
+          DB_NAME: whatsapp_bot_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: test-secret-key
+          DEBUG: 'True'
+        run: |
+          python manage.py makemigrations --check --dry-run
+      
+      - name: Verify migrations can be generated
+        env:
+          DB_NAME: whatsapp_bot_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: test-secret-key
+          DEBUG: 'True'
+        run: |
+          python manage.py makemigrations --check
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: [lint, migrations]
+    
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: whatsapp_bot_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Run migrations
+        env:
+          DB_NAME: whatsapp_bot_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: test-secret-key
+          DEBUG: 'True'
+          WHATSAPP_API_TOKEN: fake-token
+          WHATSAPP_PHONE_NUMBER_ID: fake-id
+          WHATSAPP_VERIFY_TOKEN: fake-verify
+          OPENAI_API_KEY: fake-key
+        run: |
+          python manage.py migrate
+      
+      - name: Run tests
+        env:
+          DB_NAME: whatsapp_bot_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: test-secret-key
+          DEBUG: 'True'
+          WHATSAPP_API_TOKEN: fake-token
+          WHATSAPP_PHONE_NUMBER_ID: fake-id
+          WHATSAPP_VERIFY_TOKEN: fake-verify
+          OPENAI_API_KEY: fake-key
+        run: |
+          python manage.py test core.tests --verbosity=2
+      
+      - name: Generate coverage report
+        env:
+          DB_NAME: whatsapp_bot_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: test-secret-key
+          DEBUG: 'True'
+          WHATSAPP_API_TOKEN: fake-token
+          WHATSAPP_PHONE_NUMBER_ID: fake-id
+          WHATSAPP_VERIFY_TOKEN: fake-verify
+          OPENAI_API_KEY: fake-key
+        run: |
+          pip install coverage
+          coverage run --source='core' manage.py test core.tests
+          coverage report --fail-under=80
+          coverage xml
+      
+      - name: Upload coverage to Codecov (optional)
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false

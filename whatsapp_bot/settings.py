@@ -17,7 +17,34 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me-in-production')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+# Get ALLOWED_HOSTS from environment
+ALLOWED_HOSTS = [host.strip() for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if host.strip()]
+
+# In development (DEBUG=True), automatically allow ngrok domains
+# This is safe because:
+# 1. Only enabled when DEBUG=True (never in production)
+# 2. ngrok domains are temporary and change frequently
+# 3. Production should never have DEBUG=True
+if DEBUG:
+    import re
+    
+    def is_ngrok_domain(host):
+        """Check if host is an ngrok domain"""
+        ngrok_patterns = [
+            r'\.ngrok-free\.app$',
+            r'\.ngrok-free\.dev$',
+            r'\.ngrok\.io$',
+            r'\.ngrok\.app$',
+        ]
+        return any(re.search(pattern, host) for pattern in ngrok_patterns)
+    
+    # Note: ngrok domains are handled by NgrokHostMiddleware
+    # See core/middleware.py for implementation
+    pass
+else:
+    # Production: Only allow explicitly listed hosts
+    # Never allow wildcards or ngrok domains in production
+    pass
 
 # Application definition
 INSTALLED_APPS = [
@@ -39,6 +66,12 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+# In DEBUG mode, add custom middleware to handle ngrok domains
+if DEBUG:
+    # Insert ngrok host middleware before CommonMiddleware
+    # This allows ngrok domains without modifying ALLOWED_HOSTS
+    MIDDLEWARE.insert(2, 'core.middleware.NgrokHostMiddleware')
 
 ROOT_URLCONF = 'whatsapp_bot.urls'
 

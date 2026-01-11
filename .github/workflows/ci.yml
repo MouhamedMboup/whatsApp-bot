@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint:
+    name: Lint and Type Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 mypy
+      
+      - name: Lint with flake8
+        run: |
+          flake8 core/ whatsapp_bot/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 core/ whatsapp_bot/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      
+      - name: Type check with mypy
+        run: |
+          mypy core/ whatsapp_bot/ --ignore-missing-imports || true
+
+  migrations:
+    name: Check Migrations
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Check for missing migrations
+        run: |
+          python manage.py makemigrations --check --dry-run
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: whatsapp_bot_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install coverage
+      
+      - name: Run migrations
+        env:
+          DB_NAME: whatsapp_bot_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: test-secret-key-for-ci
+          DEBUG: True
+        run: |
+          python manage.py migrate
+      
+      - name: Run tests with coverage
+        env:
+          DB_NAME: whatsapp_bot_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: test-secret-key-for-ci
+          DEBUG: True
+          # Fake API keys for testing (all external services are mocked)
+          WHATSAPP_API_TOKEN: fake-token
+          WHATSAPP_PHONE_NUMBER_ID: fake-id
+          WHATSAPP_VERIFY_TOKEN: fake-verify-token
+          OPENAI_API_KEY: fake-openai-key
+        run: |
+          coverage run --source='core' manage.py test core.tests --verbosity=2
+          coverage report --fail-under=80
+          coverage xml
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+        if: always()

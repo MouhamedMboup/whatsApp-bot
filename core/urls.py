@@ -10,4 +10,6 @@ urlpatterns = [
     # WhatsApp webhook endpoints
     path('whatsapp/webhook', views.whatsapp_webhook, name='whatsapp_webhook'),
     path('whatsapp/verify', views.whatsapp_verify, name='whatsapp_verify'),
+    # Health check endpoint
+    path('health', views.health_check, name='health_check'),
 ]
