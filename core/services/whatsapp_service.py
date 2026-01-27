@@ -59,6 +59,11 @@ class WhatsAppService:
             url = WhatsAppService.get_api_url("messages")
             headers = WhatsAppService.get_headers()
             
+            # Ensure phone number is in E.164 format (starts with +)
+            if not phone_number.startswith("+"):
+                phone_number = "+" + phone_number
+                logger.warning(f"Phone number missing + prefix, corrected to: {phone_number}")
+            
             payload = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -74,12 +79,23 @@ class WhatsAppService:
             
             if response.status_code == 200:
                 response_data = response.json()
-                logger.info(f"Message envoyé avec succès à {phone_number}")
+                # Log the full response to debug delivery issues
+                logger.info(
+                    f"Message envoyé avec succès à {phone_number} | "
+                    f"message_id={response_data.get('messages', [{}])[0].get('id', 'unknown')}"
+                )
                 return True, None, response_data
             else:
                 error_data = response.json() if response.content else {}
-                error_msg = error_data.get("error", {}).get("message", "Erreur inconnue")
-                logger.error(f"Erreur envoi message à {phone_number}: {error_msg}")
+                error_info = error_data.get("error", {})
+                error_msg = error_info.get("message", "Erreur inconnue")
+                error_code = error_info.get("code", "unknown")
+                error_type = error_info.get("type", "unknown")
+                logger.error(
+                    f"Erreur envoi message à {phone_number} | "
+                    f"code={error_code} | type={error_type} | message={error_msg} | "
+                    f"full_response={error_data}"
+                )
                 return False, error_msg, error_data
                 
         except requests.exceptions.RequestException as e:
@@ -317,7 +333,26 @@ class WhatsAppService:
                 result["phone_number"] = status.get("recipient_id")
                 result["message_id"] = status.get("id")
                 result["timestamp"] = status.get("timestamp")
-                logger.info(f"Reçu un statut de message: {status.get('status')}")
+                status_value = status.get("status")
+                
+                # Log detailed status information, especially for failures
+                if status_value == "failed":
+                    error_info = status.get("errors", [])
+                    error_details = error_info[0] if error_info else {}
+                    error_code = error_details.get("code", "unknown")
+                    error_title = error_details.get("title", "unknown")
+                    error_message = error_details.get("message", "unknown")
+                    logger.error(
+                        f"Message delivery FAILED | "
+                        f"message_id={status.get('id')} | "
+                        f"recipient={status.get('recipient_id')} | "
+                        f"error_code={error_code} | "
+                        f"error_title={error_title} | "
+                        f"error_message={error_message} | "
+                        f"full_status={status}"
+                    )
+                else:
+                    logger.info(f"Reçu un statut de message: {status_value} | message_id={status.get('id')}")
                 return result
             
             # If we get here, we already processed messages above, so this shouldn't happen

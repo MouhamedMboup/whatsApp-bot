@@ -60,3 +60,38 @@ class NgrokHostMiddleware:
         
         response = self.get_response(request)
         return response
+
+
+class WebhookVerificationMiddleware:
+    """
+    Middleware to remove security headers for Meta webhook verification requests.
+    
+    This runs at the END of the middleware chain to ensure all security headers
+    added by Django are removed before Meta receives the response.
+    """
+    
+    def __init__(self, get_response):
+        self.get_response = get_response
+    
+    def __call__(self, request):
+        response = self.get_response(request)
+        
+        # Remove security headers for Meta webhook verification requests
+        # Meta requires absolutely minimal response headers
+        if '/api/whatsapp/webhook' in request.path and request.method in ['GET', 'HEAD']:
+            # Check if this is a verification request (has hub.mode parameter)
+            if request.GET.get('hub.mode') == 'subscribe':
+                # Remove all security headers that Django middleware adds
+                headers_to_remove = [
+                    'X-Frame-Options',
+                    'X-Content-Type-Options',
+                    'Cross-Origin-Opener-Policy',
+                    'Referrer-Policy',
+                    'Server',  # Remove server identification
+                ]
+                for header in headers_to_remove:
+                    if header in response:
+                        del response[header]
+                logger.debug("Removed security headers for Meta webhook verification")
+        
+        return response

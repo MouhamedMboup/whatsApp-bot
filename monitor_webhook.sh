@@ -1,0 +1,21 @@
+#!/bin/bash
+# Simple script to monitor webhook activity
+
+echo "🔍 Webhook Monitoring"
+echo "===================="
+echo ""
+echo "Django Server: ✅ Running"
+echo "ngrok URL: https://cornelia-noncancelable-sina.ngrok-free.dev"
+echo "Webhook: https://cornelia-noncancelable-sina.ngrok-free.dev/api/whatsapp/webhook"
+echo ""
+echo "📝 Next Steps:"
+echo "1. Verify webhook in Meta Console (if not done)"
+echo "2. Send a WhatsApp message to your business number"
+echo "3. Watch Django server output for incoming messages"
+echo ""
+echo "💡 Tip: Django server logs will show:"
+echo "   - MESSAGE_RECEIVED (when message arrives)"
+echo "   - WEBHOOK_VERIFY (during verification)"
+echo "   - Any errors if something goes wrong"
+echo ""
+echo "Press Ctrl+C to exit"

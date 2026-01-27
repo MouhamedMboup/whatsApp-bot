@@ -65,6 +65,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'core.middleware.WebhookVerificationMiddleware',  # Must be LAST to remove headers after all other middleware
 ]
 
 # In DEBUG mode, add custom middleware to handle ngrok domains
@@ -132,10 +133,16 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Disable APPEND_SLASH for webhook verification - Meta requires exact URL match
+APPEND_SLASH = False
+
 # WhatsApp API Configuration
 WHATSAPP_API_TOKEN = os.getenv('WHATSAPP_API_TOKEN', '')
 WHATSAPP_PHONE_NUMBER_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
 WHATSAPP_VERIFY_TOKEN = os.getenv('WHATSAPP_VERIFY_TOKEN', '')
+
+# Telegram Bot API Configuration
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 
 # OpenAI Configuration (for comment sanitization)
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
@@ -145,3 +152,42 @@ PERMIT_SALT_LENGTH = int(os.getenv('PERMIT_SALT_LENGTH', '32'))
 
 # Session timeout (30 minutes)
 SESSION_COOKIE_AGE = 30 * 60
+
+# Logging configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+            'level': 'INFO',
+        },
+    },
+    'loggers': {
+        'core.views': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'core.services': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'WARNING',
+    },
+}

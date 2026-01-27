@@ -9,37 +9,43 @@ from django.views.decorators.http import require_http_methods
 from django.conf import settings
 from django.utils import timezone
 from core.services.whatsapp_service import WhatsAppService
+from core.services.telegram_service import TelegramService
 from core.handlers.conversation_handler import ConversationHandler
 
 logger = logging.getLogger(__name__)
 
 
 @csrf_exempt
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET", "POST", "HEAD"])
 def whatsapp_verify(request):
     """
     Webhook verification endpoint for WhatsApp
     """
+    # Meta sends HEAD before GET - both must return 200
+    if request.method == 'HEAD':
+        return HttpResponse(status=200)
+    
     if request.method == 'GET':
-        # Verification request from Meta
         mode = request.GET.get('hub.mode')
         token = request.GET.get('hub.verify_token')
         challenge = request.GET.get('hub.challenge')
         
+        # Byte-perfect verification - DO NOT modify challenge or token
         if mode == 'subscribe' and token == settings.WHATSAPP_VERIFY_TOKEN:
-            return HttpResponse(challenge, status=200)
-        else:
-            return HttpResponse('Forbidden', status=403)
+            # Return challenge EXACTLY as received - no string conversion, no strip, nothing
+            return HttpResponse(challenge, status=200, content_type='text/plain')
+        
+        return HttpResponse(status=403)
     
-    return HttpResponse('Method not allowed', status=405)
+    return HttpResponse(status=405)
 
 
 @csrf_exempt
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET", "POST", "HEAD"])
 def whatsapp_webhook(request):
     """
     Webhook endpoint for WhatsApp
-    - GET: Handles webhook verification from Meta
+    - GET/HEAD: Handles webhook verification from Meta
     - POST: Handles incoming WhatsApp messages
     
     Gestion défensive des erreurs:
@@ -49,33 +55,34 @@ def whatsapp_webhook(request):
     - Messages d'erreur clairs pour l'utilisateur
     - Logging structuré pour debugging
     """
-    # Handle GET request for webhook verification (Meta sends this to verify the webhook)
+    # Handle GET/HEAD request for webhook verification (Meta sends this to verify the webhook)
+    # Meta sends HEAD before GET - both must return 200
+    if request.method == 'HEAD':
+        return HttpResponse(status=200)
+    
     if request.method == 'GET':
         mode = request.GET.get('hub.mode')
         token = request.GET.get('hub.verify_token')
         challenge = request.GET.get('hub.challenge')
         
-        logger.info(
-            "WEBHOOK_VERIFY | mode=%s | token_match=%s",
-            mode,
-            token == settings.WHATSAPP_VERIFY_TOKEN
-        )
-        
+        # Byte-perfect verification - DO NOT modify challenge or token
+        # Meta does exact string comparison
         if mode == 'subscribe' and token == settings.WHATSAPP_VERIFY_TOKEN:
-            return HttpResponse(challenge, status=200)
-        else:
-            logger.warning(
-                "WEBHOOK_VERIFY_FAILED | mode=%s | token_provided=%s",
-                mode,
-                'yes' if token else 'no'
-            )
-            return HttpResponse('Forbidden', status=403)
+            # Return challenge EXACTLY as received - no string conversion, no strip, nothing
+            # Meta requires byte-perfect match
+            return HttpResponse(challenge, status=200, content_type='text/plain')
+        
+        return HttpResponse(status=403)
     
     # Handle POST request for incoming messages
     try:
+        # Log incoming POST request
+        logger.info("WEBHOOK_POST | received POST request | body_size=%d", len(request.body))
+        
         # Parser le payload JSON
         try:
             payload = json.loads(request.body)
+            logger.debug("WEBHOOK_POST | payload_keys=%s", list(payload.keys()) if isinstance(payload, dict) else "not_dict")
         except json.JSONDecodeError as e:
             logger.error(
                 "WEBHOOK_ERROR | type=json_decode | error=%s | body_preview=%s",
@@ -98,6 +105,13 @@ def whatsapp_webhook(request):
         
         webhook_type = message_data.get("type")
         phone_number = message_data.get("phone_number")
+        
+        logger.info(
+            "WEBHOOK_PARSED | type=%s | phone_number=%s | message_id=%s",
+            webhook_type,
+            phone_number or "unknown",
+            message_data.get('message_id', 'unknown')
+        )
         
         if webhook_type == "text_message":
             return _handle_text_message(phone_number, message_data)
@@ -256,6 +270,32 @@ def _send_message_payload_safe(phone_number: str, message_payload) -> None:
     Ne lève pas d'exception - logue les erreurs uniquement
     """
     try:
+        # Telegram routing (tg:<chat_id>)
+        if phone_number and str(phone_number).startswith("tg:"):
+            if message_payload.options:
+                options = [(opt["number"], opt["text"]) for opt in message_payload.options]
+                text = TelegramService.format_menu_message(
+                    message_payload.title or "",
+                    message_payload.body or "",
+                    options=options,
+                    footer=message_payload.footer,
+                )
+            else:
+                text = TelegramService.format_menu_message(
+                    message_payload.title or "",
+                    message_payload.body or "",
+                    options=None,
+                    footer=message_payload.footer,
+                )
+            success, error, _ = TelegramService.send_message(str(phone_number), text)
+            if not success:
+                logger.error(
+                    "TELEGRAM_SEND_ERROR | phone_number=%s | error=%s",
+                    phone_number,
+                    error,
+                )
+            return
+
         if message_payload.options:
             # Message avec menu
             options = [(opt["number"], opt["text"]) for opt in message_payload.options]
@@ -302,6 +342,18 @@ def _send_error_message_safe(phone_number: str, error_message: str) -> None:
     Ne lève pas d'exception - logue les erreurs uniquement
     """
     try:
+        # Telegram routing (tg:<chat_id>)
+        if phone_number and str(phone_number).startswith("tg:"):
+            success, error, _ = TelegramService.send_message(str(phone_number), error_message)
+            if not success:
+                logger.error(
+                    "TELEGRAM_ERROR_SEND_FAILED | phone_number=%s | telegram_error=%s | user_message=%s",
+                    phone_number,
+                    error,
+                    error_message[:100]
+                )
+            return
+
         success, error = WhatsAppService.send_error_message(phone_number, error_message)
         
         if not success:
@@ -321,7 +373,7 @@ def _send_error_message_safe(phone_number: str, error_message: str) -> None:
         )
 
 
-@require_http_methods(["GET"])
+@require_http_methods(["GET", "HEAD"])
 def root(request):
     """
     Root endpoint that provides API information and available endpoints
@@ -341,7 +393,7 @@ def root(request):
     })
 
 
-@require_http_methods(["GET"])
+@require_http_methods(["GET", "HEAD"])
 def health_check(request):
     """
     Health check endpoint for monitoring and load balancers
@@ -376,3 +428,42 @@ def health_check(request):
     
     status_code = 200 if health_status['status'] == 'ok' else 503
     return JsonResponse(health_status, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def telegram_webhook(request):
+    """
+    Telegram Bot API webhook endpoint.
+
+    Configure Telegram webhook to point to:
+      https://<your-domain>/api/telegram/webhook
+    """
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"ok": False, "error": "invalid_json"}, status=400)
+
+    tg_identifier, message_text = TelegramService.parse_update(payload)
+    if not tg_identifier or message_text is None:
+        # Acknowledge non-message updates
+        return JsonResponse({"ok": True, "ignored": True})
+
+    logger.info("TELEGRAM_WEBHOOK | from=%s | text_preview=%s", tg_identifier, message_text[:50])
+
+    try:
+        handler = ConversationHandler()
+        next_state, message_payload = handler.process_message(tg_identifier, message_text)
+    except Exception as e:
+        logger.error("TELEGRAM_HANDLER_ERROR | from=%s | error=%s", tg_identifier, str(e), exc_info=True)
+        TelegramService.send_message(tg_identifier, "Une erreur est survenue. Veuillez réessayer.")
+        return JsonResponse({"ok": True})
+
+    # Send reply via Telegram
+    try:
+        if message_payload:
+            _send_message_payload_safe(tg_identifier, message_payload)
+    except Exception as e:
+        logger.error("TELEGRAM_SEND_EXCEPTION | from=%s | error=%s", tg_identifier, str(e), exc_info=True)
+
+    return JsonResponse({"ok": True, "next_state": next_state})

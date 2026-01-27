@@ -132,9 +132,12 @@ class IdentityService:
         
         # Chercher dans tous les profils (comparaison hash)
         # TODO: Optimiser cette recherche
-        for profile in DriverProfile.objects.all():
+        for profile in DriverProfile.objects.select_related("user").all():
             test_hash = hash_permit(normalized, profile.permit_salt)
             if test_hash == profile.permit_hash:
+                # Do not return deactivated drivers
+                if not profile.user.is_active:
+                    return None
                 return profile
         
         return None

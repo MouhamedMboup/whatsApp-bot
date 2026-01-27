@@ -1,8 +1,8 @@
-# Flux Conversationnels WhatsApp - Message par Message
+# Flux Conversationnels Bot (WhatsApp / Telegram) — Flow “Trust” (Propriétaires Yango)
 
 ## Vue d'Ensemble
 
-Ce document définit **exactement** chaque message WhatsApp envoyé et reçu, avec les choix proposés, les validations, et les transitions d'état. Tous les messages sont en français.
+Ce document définit **exactement** chaque message du bot envoyé et reçu (WhatsApp + Telegram), avec les choix proposés, les validations, et les transitions d'état. Tous les messages sont en français.
 
 **Principes** :
 - Un message = une seule question
@@ -11,27 +11,34 @@ Ce document définit **exactement** chaque message WhatsApp envoyé et reçu, av
 - Gestion explicite des erreurs
 - Timeout = retour au menu principal
 
+**Notes multi-canaux (implémenté)** :
+- **Telegram** :
+  - `/start` réinitialise la session et affiche toujours le message de bienvenue.
+  - Le bot ne reçoit pas automatiquement le numéro de téléphone Telegram → le driver doit saisir son **numéro E.164** (stocké dans `User.contact_phone_number`).
+  - Identifiant interne du user : `tg:<chat_id>`.
+- **WhatsApp** :
+  - Identifiant interne du user : `+<E.164>` (ex: `+221771234567`).
+  - Le numéro WhatsApp est aussi stocké comme `contact_phone_number` (si absent) pour permettre la recherche “par téléphone”.
+
 ---
 
-## 1. FLUX D'ENTRÉE (Première Interaction)
+## 1. MESSAGE D’ENTRÉE (MENU PRINCIPAL)
 
-### 1.1 Message de Bienvenue (Utilisateur Inconnu)
+### 1.1 Menu principal (Trust-focused)
 
-**Déclencheur** : Premier message reçu d'un numéro non enregistré
+**Déclencheur** :
+- Premier message reçu
+- **Telegram** : `/start` (même si l'utilisateur est déjà enregistré) → reset et retour au menu principal
 
 **Message envoyé** :
 ```
-👋 Bienvenue sur Driver Verification Bot
+Bienvenue.
+Ce service est réservé aux propriétaires de véhicules Yango.
 
-Ce service vous permet de :
-• Vérifier l'identité et la réputation de chauffeurs
-• Construire une réputation professionnelle vérifiée
-
-Pour commencer, choisissez votre rôle :
-
-1️⃣ Je suis propriétaire de véhicule
-2️⃣ Je suis chauffeur
-3️⃣ Aide / Informations
+Il permet de :
+1️⃣ Vérifier la réputation d’un chauffeur
+2️⃣ Signaler / évaluer un chauffeur
+3️⃣ Comprendre le fonctionnement
 ```
 
 **État ConversationState** :
@@ -42,9 +49,9 @@ Pour commencer, choisissez votre rôle :
 - `expires_at` : now() + 30 minutes
 
 **Actions possibles** :
-- **1** → Créer User avec role=OWNER, créer OwnerProfile, transition vers "OWNER_MAIN_MENU"
-- **2** → Créer User avec role=DRIVER, transition vers "DRIVER_MAIN_MENU"
-- **3** → Afficher message d'aide, rester en INITIAL
+- **1** → Flow 1 : Vérifier un chauffeur (par permis) → `VERIFY_ENTER_PERMIT`
+- **2** → Flow 2 : Signaler / évaluer → `REPORT_CONFIRM_OWNER`
+- **3** → Flow 3 : Comprendre le fonctionnement → `INFO_SYSTEM`
 
 **Gestion erreur** :
 - Entrée invalide → Réafficher message avec : "❌ Choix invalide. Veuillez répondre 1, 2 ou 3."
@@ -52,7 +59,282 @@ Pour commencer, choisissez votre rôle :
 
 ---
 
-### 1.2 Message d'Aide
+## 2. FLOW 1 — 🔍 Vérifier un chauffeur (Reflex / Benchmark)
+
+### 2.1 Step 1 — Strong Identification (Permis)
+
+**Message envoyé** :
+```
+Entrez le numéro de permis de conduire du chauffeur.
+
+0️⃣ Retour au menu
+```
+
+**État ConversationState** :
+- `current_state` : "VERIFY_ENTER_PERMIT"
+- `expected_input_type` : PERMIT_NUMBER
+- `allowed_values` : null (validation format)
+- `behavior_on_invalid_input` : RETRY_SAME_STATE (max 3 puis retour menu)
+
+### 2.2 Step 2 — Synthesized Reputation Result
+
+**Message envoyé** (format) :
+```
+Chauffeur identifié
+Nom : {driver_name}
+Permis : **{masked_permit}**
+
+Statut actuel : {🟢 FIABLE | 🟠 À SURVEILLER | 🔴 DÉCONSEILLÉ}
+Basé sur {N} propriétaire(s) distinct(s)
+
+Motifs les plus signalés :
+– {reason_1}
+– {reason_2}
+
+Dernier signalement : {relative_time}
+
+Options :
+0️⃣ Changer le permis
+1️⃣ Voir plus de détails
+2️⃣ Signaler ce chauffeur
+3️⃣ Revenir au menu
+```
+
+**État ConversationState** :
+- `current_state` : "VERIFY_RESULT"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2, 3]
+
+### 2.3 Step 3 — Details (Optional, Dissuasion-Oriented)
+
+**Message envoyé** :
+```
+Historique résumé :
+🔴 Incidents graves : {count}
+🟠 Alertes sérieuses : {count}
+🟢 Collaborations satisfaisantes : {count}
+
+Le statut est maintenu jusqu’à réévaluation.
+
+Options :
+0️⃣ Changer le permis
+1️⃣ Voir plus de détails
+2️⃣ Signaler ce chauffeur
+3️⃣ Revenir au menu
+```
+
+**État ConversationState** :
+- `current_state` : "VERIFY_DETAILS"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2, 3]
+
+---
+
+## 3. FLOW 2 — ⚠️ Signaler / Évaluer un chauffeur (Anti-abuse)
+
+### 3.1 Step 1 — Owner Confirmation
+
+**Message envoyé** :
+```
+Confirmez-vous être propriétaire d’un véhicule confié à ce chauffeur ?
+1️⃣ Oui
+2️⃣ Non
+```
+
+**État ConversationState** :
+- `current_state` : "REPORT_CONFIRM_OWNER"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2]
+
+### 3.2 Step 2 — Driver Permit
+
+**Message envoyé** :
+```
+Entrez le numéro de permis du chauffeur concerné.
+
+0️⃣ Retour
+```
+
+**État ConversationState** :
+- `current_state` : "REPORT_ENTER_PERMIT"
+- `expected_input_type` : PERMIT_NUMBER
+
+### 3.3 Step 3 — Phone Number Enrichment
+
+**Message envoyé** :
+```
+Entrez un numéro de téléphone utilisé par ce chauffeur (format +225…).
+
+0️⃣ Retour
+```
+
+**État ConversationState** :
+- `current_state` : "REPORT_ENTER_PHONE"
+- `expected_input_type` : PHONE_NUMBER
+
+### 3.4 Step 4 — Identity Confirmation
+
+**Message envoyé** :
+```
+Chauffeur identifié :
+Nom : {driver_name}
+Permis : **{masked_permit}**
+Téléphone déclaré : {masked_phone}
+
+Confirmez-vous ?
+0️⃣ Retour
+1️⃣ Oui
+2️⃣ Non
+```
+
+**État ConversationState** :
+- `current_state` : "REPORT_CONFIRM_IDENTITY"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2]
+
+### 3.5 Step 5 — Collaboration Duration
+
+**Message envoyé** :
+```
+Combien de temps ce chauffeur a-t-il travaillé avec vous ?
+0️⃣ Retour
+1️⃣ Moins d’1 mois
+2️⃣ 1 à 3 mois
+3️⃣ Plus de 3 mois
+```
+
+**État ConversationState** :
+- `current_state` : "REPORT_DURATION"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2, 3]
+
+### 3.6 Step 6 — Main Problem
+
+**Message envoyé** :
+```
+Quel problème principal avez-vous rencontré ?
+0️⃣ Retour
+1️⃣ Versements journaliers irréguliers
+2️⃣ Mensonges / manque de transparence
+3️⃣ Mauvaise gestion du véhicule
+4️⃣ Refus de consignes
+5️⃣ Problèmes avec la police
+6️⃣ Abandon / injoignable
+7️⃣ Autre
+```
+
+**État ConversationState** :
+- `current_state` : "REPORT_MAIN_PROBLEM"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1..7]
+
+**Si Autre (7)** :
+```
+Décrivez en une seule phrase (courte) :
+
+0️⃣ Retour
+```
+
+**État** :
+- `current_state` : "REPORT_OTHER_TEXT"
+- `expected_input_type` : SANITIZED_TEXT (max 140 chars)
+
+### 3.7 Step 7 — Severity
+
+**Message envoyé** :
+```
+Ce problème était :
+0️⃣ Retour
+1️⃣ Mineur
+2️⃣ Sérieux
+3️⃣ Grave
+```
+
+**État** :
+- `current_state` : "REPORT_SEVERITY"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2, 3]
+
+### 3.8 Step 8 — Final Recommendation
+
+**Message envoyé** :
+```
+Recommanderiez-vous ce chauffeur à un autre propriétaire ?
+
+⚠️ Un “Non” a un poids négatif important dans le calcul.
+
+1️⃣ Oui
+2️⃣ Non
+
+0️⃣ Retour
+```
+
+**État** :
+- `current_state` : "REPORT_RECOMMEND"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2]
+
+### 3.9 Step 9 — Legal / Moral Confirmation
+
+**Message envoyé** :
+```
+Confirmez-vous que ces informations sont exactes ?
+0️⃣ Retour
+1️⃣ Oui, je confirme
+2️⃣ Annuler
+```
+
+**État** :
+- `current_state` : "REPORT_CONFIRM_LEGAL"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2]
+
+### 3.10 Step 10 — Closure
+
+**Message envoyé** :
+```
+Merci.
+Votre signalement a été enregistré.
+Il contribue à protéger les propriétaires et à responsabiliser les chauffeurs.
+```
+
+Retour automatique au menu principal.
+
+---
+
+## 4. FLOW 3 — ℹ️ Comprendre le système (Controlled Transparency)
+
+**Message envoyé** :
+```
+Fonctionnement du système :
+• Le permis de conduire est l’identifiant principal
+• Les numéros de téléphone peuvent changer
+• Seuls les propriétaires peuvent signaler
+• Les signalements graves pèsent plus que les positifs
+• Un chauffeur ne peut pas effacer son historique
+• Une réévaluation est possible après une période sans incident
+
+Statuts affichés :
+🟢 FIABLE — Aucun incident grave récent, collaborations stables
+🟠 À SURVEILLER — Alertes répétées ou comportement instable
+🔴 DÉCONSEILLÉ — Problèmes graves signalés par plusieurs propriétaires
+
+1️⃣ Vérifier un chauffeur
+2️⃣ Signaler un chauffeur
+3️⃣ Quitter
+
+0️⃣ Retour au menu
+```
+
+**État** :
+- `current_state` : "INFO_SYSTEM"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2, 3]
+
+---
+
+> Note: Les anciens flux OWNER/DRIVER (création de profil, collaborations, ratings “classiques”) sont conservés dans le code pour compatibilité,
+> mais le **menu d’entrée** a été remplacé par ce flow “Trust”.
 
 **Déclencheur** : Choix "3" dans le message de bienvenue
 
@@ -159,7 +441,7 @@ Comment souhaitez-vous rechercher ?
 ```
 📱 RECHERCHE PAR TÉLÉPHONE
 
-Entrez le numéro de téléphone WhatsApp du chauffeur.
+Entrez le numéro de téléphone du chauffeur.
 
 Format : +221771234567
 (Code pays + numéro, sans espaces)
@@ -176,7 +458,9 @@ Ou tapez 0 pour annuler.
 
 **Validation** :
 - Format E.164 : `^\+[1-9]\d{1,14}$`
-- Si valide → Recherche User par phone_number
+- Si valide → Recherche d'un **driver actif** (role=DRIVER, is_active=True) par :
+  - `User.phone_number == <E.164>` (cas WhatsApp)
+  - ou `User.contact_phone_number == <E.164>` (cas Telegram)
 - Si invalide → Message erreur + retry
 
 **Message erreur** :
@@ -190,9 +474,8 @@ Réessayez ou tapez 0 pour annuler.
 ```
 
 **Actions après validation** :
-- **User trouvé avec role=DRIVER** → Transition vers "OWNER_VIEW_PROFILE_RESULT"
-- **User trouvé avec role≠DRIVER** → Message "Utilisateur trouvé mais n'est pas un chauffeur", retour menu
-- **User non trouvé** → Message "Profil non trouvé", transition vers "OWNER_INVITE_DRIVER"
+- **Driver actif trouvé** → Transition vers "OWNER_VIEW_PROFILE_RESULT"
+- **Non trouvé** → Message "Profil non trouvé" avec navigation (nouvelle recherche / retour menu)
 - **0** → Retour "OWNER_VERIFY_DRIVER"
 
 ---
@@ -257,22 +540,23 @@ Le chauffeur peut créer un profil en s'inscrivant.
 
 Que souhaitez-vous faire ?
 
-1️⃣ Inviter le chauffeur à créer un profil
-2️⃣ Nouvelle recherche
-3️⃣ Retour au menu
+1️⃣ Nouvelle recherche
+2️⃣ Retour au menu
 ```
 
 **État ConversationState** :
-- `current_state` : "OWNER_INVITE_DRIVER"
+- `current_state` : "OWNER_PHONE_NOT_FOUND" (cas recherche par téléphone)
 - `expected_input_type` : MENU_CHOICE
-- `allowed_values` : [1, 2, 3]
+- `allowed_values` : [1, 2]
 - `behavior_on_invalid_input` : RETRY_SAME_STATE
-- `temp_data` : {"search_phone": "+221771234567"} ou {"search_permit": "ABC123"}
+- `temp_data` : {"searched_phone": "+221771234567"} (si recherche par téléphone)
 
 **Actions possibles** :
-- **1** → Envoyer notification au driver (si téléphone fourni), message confirmation, retour menu
-- **2** → Retour "OWNER_VERIFY_DRIVER"
-- **3** → Retour "OWNER_MAIN_MENU"
+- **1** → Nouvelle recherche (retour "OWNER_SEARCH_BY_PHONE")
+- **2** → Retour "OWNER_MAIN_MENU"
+
+**Note (recherche par permis)** :
+- Si recherche par permis et profil non trouvé, le bot peut proposer une étape **invitation** via l'état `OWNER_INVITE_DRIVER` (selon les règles internes).
 
 **Message confirmation invitation** :
 ```
@@ -443,7 +727,7 @@ Client: [X]/5 | Fiabilité: [X]/5
 ```
 🤝 DÉCLARER UNE COLLABORATION
 
-Entrez le numéro de téléphone WhatsApp du chauffeur.
+Entrez le numéro de téléphone du chauffeur.
 
 Format : +221771234567
 
@@ -470,8 +754,8 @@ Confirmer la déclaration ?
 ```
 
 **Actions** :
-- Si driver non trouvé → Message "Chauffeur non trouvé. Il doit créer un profil.", retour menu
-- Si driver trouvé → Transition vers "OWNER_DECLARE_COLLABORATION_DATES"
+- Si driver actif non trouvé → Message "Chauffeur non trouvé. Il doit créer un profil.", retour menu
+- Si driver actif trouvé (role=DRIVER, is_active=True, et correspondance sur `phone_number` OU `contact_phone_number`) → Transition vers "OWNER_DECLARE_COLLABORATION_DATES"
 
 ---
 
@@ -822,27 +1106,23 @@ Retour au menu principal.
 
 Que souhaitez-vous faire ?
 
-1️⃣ Créer/Mettre à jour mon profil
-2️⃣ Verrouiller mon identité
-3️⃣ Voir ma réputation
-4️⃣ Confirmer une collaboration
-5️⃣ Répondre à une évaluation
-6️⃣ Quitter
+1️⃣ Créer mon profil / Voir mon profil (selon si un profil existe)
+2️⃣ Voir ma réputation
+3️⃣ Voir mes collaborations
+4️⃣ Quitter
 ```
 
 **État ConversationState** :
 - `current_state` : "DRIVER_MAIN_MENU"
 - `expected_input_type` : MENU_CHOICE
-- `allowed_values` : [1, 2, 3, 4, 5, 6]
+- `allowed_values` : [1, 2, 3, 4]
 - `behavior_on_invalid_input` : RETRY_SAME_STATE
 
 **Actions possibles** :
-- **1** → Transition vers "DRIVER_CREATE_PROFILE"
-- **2** → Transition vers "DRIVER_LOCK_IDENTITY"
-- **3** → Transition vers "DRIVER_VIEW_REPUTATION"
-- **4** → Transition vers "DRIVER_CONFIRM_COLLABORATION"
-- **5** → Transition vers "DRIVER_RESPOND_TO_REVIEW"
-- **6** → Message de fin, session terminée
+- **1** → Si profil existe → "DRIVER_VIEW_PROFILE", sinon → "DRIVER_CREATE_PROFILE"
+- **2** → "DRIVER_VIEW_REPUTATION"
+- **3** → "DRIVER_VIEW_COLLABORATIONS"
+- **4** → Message de fin, session terminée
 
 ---
 
@@ -866,25 +1146,40 @@ Commencer ?
 2️⃣ Non, plus tard
 ```
 
-**Si DriverProfile existe** :
-```
-👤 MON PROFIL
-
-Nom : [display_name ou "Non renseigné"]
-Identité : [Verrouillée ✅ / Non verrouillée ⚠️]
-
-Que souhaitez-vous modifier ?
-
-1️⃣ Modifier le nom
-2️⃣ Voir les détails
-3️⃣ Retour au menu
-```
-
 **État ConversationState** :
 - `current_state` : "DRIVER_CREATE_PROFILE"
 - `expected_input_type` : MENU_CHOICE
-- `allowed_values` : [1, 2, 3]
+- `allowed_values` : [1, 2]
 - `behavior_on_invalid_input` : RETRY_SAME_STATE
+
+**Note Telegram (implémenté)** :
+- Si l'utilisateur est sur Telegram (`phone_number` = `tg:<chat_id>`) et que `contact_phone_number` est vide :
+  - le bot demande d'abord le numéro du driver (état `DRIVER_ENTER_PHONE`) avant de continuer la création.
+
+### 3.2.1 Saisir Numéro de Téléphone (Telegram)
+
+**Déclencheur** : Driver sur Telegram sans `contact_phone_number`
+
+**Message envoyé** :
+```
+📞 NUMÉRO DE TÉLÉPHONE
+
+Entrez votre numéro de téléphone (format international).
+
+Format : +221771234567
+
+Ou tapez 0 pour annuler.
+```
+
+**État ConversationState** :
+- `current_state` : "DRIVER_ENTER_PHONE"
+- `expected_input_type` : PHONE_NUMBER
+- `allowed_values` : null (validation regex)
+- `behavior_on_invalid_input` : RETRY_SAME_STATE
+
+**Actions** :
+- **E.164 valide** → stocker dans `User.contact_phone_number` puis continuer vers `DRIVER_CREATE_PROFILE`
+- **0** → retour `DRIVER_MAIN_MENU`
 
 **Si nouveau profil, choix "1"** :
 ```
@@ -922,7 +1217,8 @@ Exemple : CI1234567
 
 Ce numéro ne sera jamais affiché.
 
-Ou tapez 0 pour annuler.
+3️⃣ Retour
+0️⃣ Annuler
 ```
 
 **État ConversationState** :
@@ -988,7 +1284,7 @@ Confirmer ce numéro de permis ?
 
 **État ConversationState** :
 - `current_state` : "DRIVER_CONFIRM_PERMIT"
-- `expected_input_type` : CONFIRMATION
+- `expected_input_type` : MENU_CHOICE
 - `allowed_values` : [1, 2]
 - `behavior_on_invalid_input` : RETRY_SAME_STATE
 - `temp_data` : {..., "permit_normalized": "CI1234567"}
@@ -999,12 +1295,12 @@ Confirmer ce numéro de permis ?
 - Exemple : "ABC123456789" → "AB****789"
 
 **Actions** :
-- **1** → Créer DriverProfile :
+- **1** → Mettre `User.role = DRIVER` puis créer DriverProfile :
   - Générer salt unique
   - Hasher : SHA-256(permit_normalized + salt)
   - Stocker permit_hash et permit_salt
   - Enregistrer ConsentLog (PROFILE_CREATION)
-  - Message confirmation
+- Transition persistée vers `DRIVER_LOCK_IDENTITY` (prompt de verrouillage)
 - **2** → Retour "DRIVER_ENTER_PERMIT"
 
 **Message confirmation** :
@@ -1069,13 +1365,69 @@ Confirmer le verrouillage ?
 
 **État ConversationState** :
 - `current_state` : "DRIVER_LOCK_IDENTITY"
-- `expected_input_type` : CONFIRMATION
+- `expected_input_type` : MENU_CHOICE
 - `allowed_values` : [1, 2]
 - `behavior_on_invalid_input` : RETRY_SAME_STATE
 
 **Actions** :
 - **1** → Mettre `identity_locked = True`, `identity_locked_at = now()`, message confirmation
 - **2** → Retour menu
+
+---
+
+### 3.6 Mon Profil (voir / modifier / désactiver)
+
+**Déclencheur** : Menu driver, choix "1" quand un profil existe
+
+**Message envoyé** :
+```
+👤 MON PROFIL
+
+Nom : [display_name ou "(non renseigné)"]
+Téléphone : [contact_phone_number ou "(non renseigné)"]
+Identité : [✅ Verrouillée / ⚠️ Non verrouillée]
+
+1️⃣ Modifier mon nom
+2️⃣ Supprimer mon profil
+3️⃣ Retour au menu
+```
+
+**État ConversationState** :
+- `current_state` : "DRIVER_VIEW_PROFILE"
+- `expected_input_type` : MENU_CHOICE
+- `allowed_values` : [1, 2, 3]
+
+#### 3.6.1 Modifier mon nom
+**Message envoyé** :
+```
+✏️ MODIFIER MON NOM
+
+Entrez votre nouveau nom d'affichage (max 100 caractères).
+
+Ou tapez 0 pour annuler.
+```
+
+**Action** :
+- Sauvegarder `DriverProfile.display_name`
+- Retour à "MON PROFIL"
+
+#### 3.6.2 Supprimer mon profil (implémenté = désactivation)
+**Message envoyé** :
+```
+🗑️ SUPPRIMER MON PROFIL
+
+Souhaitez-vous désactiver votre profil ?
+
+- Vous ne serez plus trouvable par numéro
+- Vos collaborations/évaluations restent enregistrées
+
+1️⃣ Oui, désactiver
+2️⃣ Non, annuler
+```
+
+**Action** :
+- **1** → `User.is_active = False` + suppression des `ConversationState`, puis fin : "Tapez /start pour réactiver."
+- **2** → Retour à "MON PROFIL"
 
 **Message confirmation** :
 ```
@@ -1362,6 +1714,30 @@ Cette action n'est pas possible dans l'état actuel.
 
 Retour au menu principal.
 ```
+
+---
+
+## 6bis. ÉTAT SPÉCIAL (Compte désactivé)
+
+### 6bis.1 Compte désactivé
+
+**Déclencheur** : `User.is_active == False`
+
+**Message envoyé** :
+```
+🚫 COMPTE DÉSACTIVÉ
+
+Votre profil a été désactivé.
+
+1️⃣ Réactiver
+2️⃣ Quitter
+
+Vous pouvez aussi taper /start.
+```
+
+**Actions** :
+- **1** → `User.is_active = True` puis reset vers message de bienvenue
+- **2** → Fin
 
 ---
 

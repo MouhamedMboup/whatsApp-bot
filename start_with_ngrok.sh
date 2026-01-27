@@ -157,11 +157,12 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         exit 1
     fi
     
-    # Check if ngrok API is responding
+    # Check if ngrok API is responding AND a tunnel is actually established
     if curl -s http://localhost:4040/api/tunnels > /dev/null 2>&1; then
-        # Verify we can actually get tunnel data
         API_RESPONSE=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
-        if [ -n "$API_RESPONSE" ] && echo "$API_RESPONSE" | grep -q "tunnels"; then
+        # IMPORTANT: ngrok may return {"tunnels":[]} while it's still connecting.
+        # Don't treat that as "ready" — only ready once public_url exists.
+        if [ -n "$API_RESPONSE" ] && echo "$API_RESPONSE" | grep -q '"public_url"'; then
             NGROK_READY=true
             break
         fi

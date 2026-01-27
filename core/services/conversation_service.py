@@ -267,7 +267,7 @@ class ConversationService:
             ConversationService.delete_state(old_state)
         
         # Créer le nouvel état
-        return ConversationService.get_or_create_state(
+        state = ConversationService.get_or_create_state(
             user=user,
             initial_state=new_state,
             expected_input_type=expected_input_type,
@@ -275,6 +275,13 @@ class ConversationService:
             behavior_on_invalid_input=behavior_on_invalid_input,
             timeout_minutes=timeout_minutes
         )
+
+        # Apply initial temp_data if provided (get_or_create_state always resets temp_data)
+        if temp_data is not None:
+            ConversationService.update_state(state, temp_data=temp_data, reset_invalid_count=True)
+            state.refresh_from_db()
+
+        return state
     
     @staticmethod
     def get_state_info(state: ConversationState) -> Dict[str, Any]:

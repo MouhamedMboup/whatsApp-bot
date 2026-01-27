@@ -4,6 +4,7 @@ Models for WhatsApp Driver Verification Bot
 import hashlib
 import secrets
 import json
+import re
 from django.db import models
 from django.core.validators import RegexValidator
 from django.utils import timezone
@@ -16,16 +17,34 @@ class User(models.Model):
         OWNER = 'OWNER', 'Propriétaire'
         DRIVER = 'DRIVER', 'Chauffeur'
     
+    # NOTE: despite the name, this field acts as a unique user identifier across channels.
+    # WhatsApp uses E.164 (e.g. +221771234567)
+    # Telegram uses a synthetic id "tg:<chat_id>" (e.g. tg:123456789)
     phone_number = models.CharField(
         max_length=20,
         unique=True,
+        validators=[
+            RegexValidator(
+                regex=r'^(\+[1-9]\d{1,14}|tg:\d+)$',
+                message='Identifiant invalide. WhatsApp: +221771234567, Telegram: tg:123456789'
+            )
+        ],
+        help_text='Identifiant utilisateur (WhatsApp E.164 ou Telegram tg:<chat_id>)'
+    )
+
+    # Optional contact phone number (for Telegram users or when WhatsApp number isn't the identifier).
+    # This is what Owners will use when they "verify a driver by phone number".
+    contact_phone_number = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
         validators=[
             RegexValidator(
                 regex=r'^\+[1-9]\d{1,14}$',
                 message='Format E.164 requis (ex: +221771234567)'
             )
         ],
-        help_text='Numéro WhatsApp au format E.164'
+        help_text='Numéro de téléphone au format E.164 (optionnel, utilisé pour recherche/contacts)'
     )
     role = models.CharField(
         max_length=10,
@@ -135,10 +154,13 @@ class DriverProfile(models.Model):
         """
         Normalise le numéro de permis ivoirien
         - Convertit en majuscules
-        - Supprime espaces et tirets
+        - Supprime tous les espaces (y compris espaces Unicode) et tirets
         - Retourne la version normalisée
         """
-        normalized = permit_number.upper().replace(' ', '').replace('-', '')
+        if permit_number is None:
+            return ""
+        # Remove any whitespace (including unicode) and hyphens
+        normalized = re.sub(r"[\s\-]+", "", str(permit_number).upper())
         return normalized
     
     @staticmethod
@@ -311,6 +333,89 @@ class Rating(models.Model):
         if len(scores) % 2 == 0:
             return (scores[mid - 1] + scores[mid]) / 2.0
         return float(scores[mid])
+
+
+class DriverSignal(models.Model):
+    """
+    Signalement / évaluation trust-focused basé sur le permis (identifiant principal).
+
+    Note: on ne stocke jamais le permis en clair. On stocke un fingerprint déterministe (HMAC-like)
+    calculé à partir du permis normalisé + SECRET_KEY.
+    """
+
+    class DurationChoice(models.IntegerChoices):
+        LT_1_MONTH = 1, "Moins d’1 mois"
+        M_1_TO_3 = 2, "1 à 3 mois"
+        GT_3_MONTHS = 3, "Plus de 3 mois"
+
+    class MainProblem(models.IntegerChoices):
+        DAILY_PAYMENTS_IRREGULAR = 1, "Versements journaliers irréguliers"
+        LYING_LACK_TRANSPARENCY = 2, "Mensonges / manque de transparence"
+        BAD_VEHICLE_MANAGEMENT = 3, "Mauvaise gestion du véhicule"
+        REFUSAL_OF_INSTRUCTIONS = 4, "Refus de consignes"
+        POLICE_PROBLEMS = 5, "Problèmes avec la police"
+        ABANDON_UNREACHABLE = 6, "Abandon / injoignable"
+        OTHER = 7, "Autre"
+
+    class Severity(models.IntegerChoices):
+        MINOR = 1, "Mineur"
+        SERIOUS = 2, "Sérieux"
+        GRAVE = 3, "Grave"
+
+    owner = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="driver_signals",
+        help_text="Propriétaire qui signale (channel-agnostic via User.phone_number)",
+    )
+
+    # Deterministic fingerprint of permit_normalized (sha256("permit:"+permit+":"+SECRET_KEY))
+    permit_fingerprint = models.CharField(max_length=64, db_index=True)
+
+    # Optional linkage when a driver profile exists (not required to rate/report)
+    driver_profile = models.ForeignKey(
+        DriverProfile,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="signals",
+    )
+
+    reported_phone_e164 = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        validators=[
+            RegexValidator(
+                regex=r"^\+[1-9]\d{1,14}$",
+                message="Format E.164 requis (ex: +22501020304)",
+            )
+        ],
+        help_text="Numéro déclaré (enrichissement, pas identifiant primaire)",
+    )
+
+    duration_choice = models.IntegerField(choices=DurationChoice.choices)
+    main_problem_code = models.IntegerField(choices=MainProblem.choices)
+    main_problem_other_text = models.TextField(null=True, blank=True)
+    severity = models.IntegerField(choices=Severity.choices)
+
+    # Final recommendation: False has strong negative weight.
+    recommend = models.BooleanField()
+
+    legal_confirmed = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "driver_signals"
+        indexes = [
+            models.Index(fields=["permit_fingerprint", "created_at"]),
+            models.Index(fields=["owner", "created_at"]),
+            models.Index(fields=["severity"]),
+            models.Index(fields=["recommend"]),
+        ]
+
+    def __str__(self):
+        return f"DriverSignal: owner={self.owner_id} permit={self.permit_fingerprint[:8]}..."
 
 
 class ConversationState(models.Model):
